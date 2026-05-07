@@ -1,0 +1,50 @@
+name: Scraper Empleos Públicos Semanal
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Todos los lunes a las 10:00 UTC
+    # En Chile normalmente será temprano en la mañana.
+    - cron: "0 10 * * 1"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar Google Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+          google-chrome --version
+
+      - name: Instalar dependencias Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ejecutar scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python scraper.py
+
+      - name: Subir Excel como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: empleos-publicos-output
+          path: |
+            empleos_publicos.xlsx
+            empleos_publicos.csv
