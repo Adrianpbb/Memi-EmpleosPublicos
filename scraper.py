@@ -1,6 +1,7 @@
 # =========================
 # SCRAPER EMPLEOS PÚBLICOS
 # GitHub Actions + Supabase
+# Versión robusta con categoría
 # =========================
 
 from selenium import webdriver
@@ -31,16 +32,17 @@ EXPORT_CSV = True
 EXCEL_FILE = "empleos_publicos.xlsx"
 CSV_FILE = "empleos_publicos.csv"
 
+RESTART_BROWSER_EVERY = 100
+PAGE_LOAD_TIMEOUT = 45
+SCRIPT_TIMEOUT = 45
+DETAIL_WAIT_TIMEOUT = 25
+
 
 # =========================
 # FUNCIONES DE LIMPIEZA
 # =========================
 
 def clean_text(text):
-    """
-    Limpia textos largos sin destruir información útil.
-    Elimina saltos de línea, tabs, espacios repetidos y caracteres invisibles.
-    """
     if text is None:
         return ""
 
@@ -51,6 +53,29 @@ def clean_text(text):
     return text.strip()
 
 
+def normalize_text(text):
+    """
+    Normaliza texto para buscar palabras clave.
+    No elimina completamente signos, pero sí estandariza acentos comunes.
+    """
+    text = clean_text(text).lower()
+
+    replacements = {
+        "á": "a",
+        "é": "e",
+        "í": "i",
+        "ó": "o",
+        "ú": "u",
+        "ü": "u",
+        "ñ": "n"
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    return text
+
+
 def safe_text_from_element(parent, by, selector, default="No especificado"):
     try:
         return clean_text(parent.find_element(by, selector).text)
@@ -59,10 +84,6 @@ def safe_text_from_element(parent, by, selector, default="No especificado"):
 
 
 def get_block_text_by_id(driver, element_id, remove_headings=True, default="No especificado"):
-    """
-    Extrae texto completo de un bloque por ID.
-    Es más robusto que depender de p/span/li específicos.
-    """
     try:
         element = driver.find_element(By.ID, element_id)
         text = clean_text(element.text)
@@ -99,15 +120,114 @@ def get_block_text_by_id(driver, element_id, remove_headings=True, default="No e
 
 
 # =========================
+# CLASIFICACIÓN SIMPLE
+# =========================
+
+def clasificar_categoria(row):
+    """
+    Clasificación heurística por palabras clave.
+    No filtra nada. Solo agrega categoría.
+    """
+
+    texto = " ".join([
+        str(row.get("Cargo", "")),
+        str(row.get("Servicio Público", "")),
+        str(row.get("Ministerio", "")),
+        str(row.get("Convocatoria", "")),
+        str(row.get("Área de Trabajo", "")),
+        str(row.get("Condiciones", "")),
+        str(row.get("Formación Académica", "")),
+        str(row.get("Especialización", "")),
+        str(row.get("Experiencia", "")),
+        str(row.get("Funciones", ""))
+    ])
+
+    texto = normalize_text(texto)
+
+    categorias = {
+        "Salud": [
+            "medico", "medica", "enfermero", "enfermera", "tens",
+            "matron", "matrona", "kinesiologo", "kinesiologa",
+            "fonoaudiologo", "fonoaudiologa", "psicologo", "psicologa",
+            "odontologo", "odontologa", "nutricionista", "quimico farmaceutico",
+            "farmacia", "salud", "hospital", "cesfam", "cosam",
+            "terapeuta ocupacional", "tecnologo medico", "laboratorio clinico"
+        ],
+        "Jurídico": [
+            "abogado", "abogada", "juridico", "juridica", "derecho",
+            "ley", "sumario", "fiscalia", "asesoria juridica",
+            "contencioso", "legal", "legales", "normativa"
+        ],
+        "Administración / Gestión Pública": [
+            "administrador publico", "administracion publica",
+            "gestion publica", "control de gestion", "planificacion",
+            "politicas publicas", "compras publicas", "mercado publico",
+            "auditoria", "control interno", "gestion institucional",
+            "monitoreo", "evaluacion", "presupuesto", "programas publicos"
+        ],
+        "TI / Datos": [
+            "informatica", "informatico", "tecnologia", "sistemas",
+            "programador", "programadora", "desarrollador", "desarrolladora",
+            "software", "base de datos", "sql", "python", "power bi",
+            "business intelligence", "bi", "datos", "data", "ciberseguridad",
+            "redes", "telecomunicaciones", "soporte informatico",
+            "transformacion digital"
+        ],
+        "Ingeniería / Obras": [
+            "ingeniero", "ingeniera", "ingenieria", "constructor",
+            "constructora", "arquitecto", "arquitecta", "obras",
+            "infraestructura", "inspeccion tecnica", "ito",
+            "electricidad", "electrico", "electrica", "mecanica",
+            "civil", "proyecto de inversion", "mantenimiento",
+            "edificacion", "urbanismo"
+        ],
+        "Finanzas / Contabilidad": [
+            "contador", "contadora", "contabilidad", "finanzas",
+            "tesoreria", "presupuesto", "remuneraciones", "balance",
+            "facturacion", "pago", "pagos", "financiero", "financiera",
+            "ejecucion presupuestaria", "control financiero"
+        ],
+        "Educación": [
+            "docente", "profesor", "profesora", "educador", "educadora",
+            "pedagogia", "parvularia", "parvulo", "educacion",
+            "jardin infantil", "aula", "curriculum"
+        ],
+        "Social / Comunitario": [
+            "trabajador social", "trabajadora social", "asistente social",
+            "comunitario", "comunitaria", "territorial", "familia",
+            "niñez", "ninez", "adolescencia", "vulnerabilidad",
+            "intervencion social", "programa social"
+        ],
+        "Comunicaciones": [
+            "periodista", "comunicaciones", "comunicacion",
+            "prensa", "difusion", "diseno grafico", "diseñador",
+            "disenador", "redes sociales", "audiovisual"
+        ],
+        "Recursos Humanos": [
+            "recursos humanos", "gestion de personas", "desarrollo de personas",
+            "seleccion", "capacitacion", "bienestar", "personal",
+            "relaciones laborales", "clima laboral"
+        ]
+    }
+
+    puntajes = {}
+
+    for categoria, palabras in categorias.items():
+        puntajes[categoria] = sum(1 for palabra in palabras if palabra in texto)
+
+    mejor_categoria = max(puntajes, key=puntajes.get)
+
+    if puntajes[mejor_categoria] == 0:
+        return "Otros"
+
+    return mejor_categoria
+
+
+# =========================
 # EXTRACCIÓN DE DATOS
 # =========================
 
 def parse_datos_aviso(driver):
-    """
-    Extrae pares h3 -> p del bloque lblAvisoTrabajoDatos.
-    Ejemplo:
-    Institución, Convocatoria, Nº de Vacantes, Área de Trabajo, Región, Ciudad, Tipo de Vacante.
-    """
     datos = {}
 
     try:
@@ -141,12 +261,6 @@ def extract_postulantes(driver):
 
 
 def extract_renta(driver):
-    """
-    Extrae renta de forma robusta:
-    1. Busca en lblRenta.
-    2. Busca en lblCondiciones.
-    3. Busca en panelBase.
-    """
     textos_posibles = []
 
     for element_id in ["lblRenta", "lblCondiciones", "panelBase"]:
@@ -178,9 +292,6 @@ def extract_renta(driver):
 
 
 def renta_a_numero(renta_texto):
-    """
-    Convierte '2.300.000' a 2300000.
-    """
     if not renta_texto or renta_texto == "No especificado":
         return None
 
@@ -196,13 +307,6 @@ def renta_a_numero(renta_texto):
 
 
 def extract_grado(driver):
-    """
-    Extrae grado desde distintos textos posibles.
-    Ejemplos:
-    - Grado: 12° E.U.S
-    - La renta corresponde a Grado 13° E.U.S.
-    - Profesional Grado 9° de la E.U.S.
-    """
     textos_posibles = []
 
     for element_id in ["lblCondiciones", "lblAvisoTrabajoDatos", "panelBase"]:
@@ -238,10 +342,6 @@ def extract_grado(driver):
 # =========================
 
 def scroll_to_load_all_jobs(driver, wait, pause=1.0, max_scrolls=100):
-    """
-    La página carga ofertas hacia abajo.
-    Hace scroll hasta que deja de aumentar la cantidad de div.items.
-    """
     last_count = 0
     stable_rounds = 0
 
@@ -269,10 +369,6 @@ def scroll_to_load_all_jobs(driver, wait, pause=1.0, max_scrolls=100):
 
 
 def collect_job_cards(driver):
-    """
-    Extrae datos básicos y URL de cada tarjeta.
-    Se hace antes de entrar al detalle para evitar stale elements.
-    """
     cards = []
     job_elements = driver.find_elements(By.CSS_SELECTOR, "div.items")
 
@@ -315,7 +411,11 @@ def create_driver():
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
 
-    return webdriver.Chrome(options=options)
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    driver.set_script_timeout(SCRIPT_TIMEOUT)
+
+    return driver
 
 
 # =========================
@@ -324,7 +424,7 @@ def create_driver():
 
 def scrape_empleos_publicos():
     driver = create_driver()
-    wait = WebDriverWait(driver, 25)
+    wait = WebDriverWait(driver, DETAIL_WAIT_TIMEOUT)
 
     jobs = []
 
@@ -341,6 +441,16 @@ def scrape_empleos_publicos():
         print(f"\nTotal de ofertas recolectadas: {len(job_cards)}\n")
 
         for i, card in enumerate(job_cards, start=1):
+            if i > 1 and i % RESTART_BROWSER_EVERY == 0:
+                print(f"Reiniciando navegador en oferta {i} para evitar cuelgues...")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+
+                driver = create_driver()
+                wait = WebDriverWait(driver, DETAIL_WAIT_TIMEOUT)
+
             cargo = card.get("Cargo", "Sin cargo")
             url_oferta = card.get("URL Oferta", "")
 
@@ -351,12 +461,17 @@ def scrape_empleos_publicos():
                 continue
 
             try:
-                driver.get(url_oferta)
+                try:
+                    driver.get(url_oferta)
+                except Exception as e:
+                    print(f"Timeout o error cargando [{cargo}]: {e}")
+                    continue
 
                 try:
                     wait.until(EC.presence_of_element_located((By.ID, "panelBase")))
-                except Exception:
-                    print(f"No cargó panelBase en: {cargo}")
+                except Exception as e:
+                    print(f"No cargó panelBase en [{cargo}]. Se omite oferta. Error: {e}")
+                    continue
 
                 datos_aviso = parse_datos_aviso(driver)
 
@@ -391,7 +506,7 @@ def scrape_empleos_publicos():
                 requisitos = get_block_text_by_id(driver, "lblRequisitos", remove_headings=True)
                 etapas_seleccion = get_block_text_by_id(driver, "lblCriterio", remove_headings=True)
 
-                jobs.append({
+                row = {
                     "Cargo": card.get("Cargo", "No especificado"),
                     "Servicio Público": card.get("Servicio Público", "No especificado"),
                     "Ministerio": card.get("Ministerio", "No especificado"),
@@ -419,13 +534,21 @@ def scrape_empleos_publicos():
                     "Competencias": competencias,
                     "Requisitos": requisitos,
                     "Etapas de Selección": etapas_seleccion
-                })
+                }
+
+                row["Categoría"] = clasificar_categoria(row)
+
+                jobs.append(row)
 
             except Exception as e:
                 print(f"Error procesando [{cargo}]: {e}")
+                continue
 
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
     df = pd.DataFrame(jobs)
     print(f"\nTotal de registros extraídos: {len(df)}")
@@ -458,9 +581,6 @@ def export_files(df):
 # =========================
 
 def prepare_dataframe_for_supabase(df):
-    """
-    Renombra columnas para que coincidan con la tabla Supabase.
-    """
     df_supabase = df.rename(columns={
         "Cargo": "cargo",
         "Servicio Público": "servicio_publico",
@@ -488,7 +608,8 @@ def prepare_dataframe_for_supabase(df):
         "Funciones": "funciones",
         "Competencias": "competencias",
         "Requisitos": "requisitos",
-        "Etapas de Selección": "etapas_seleccion"
+        "Etapas de Selección": "etapas_seleccion",
+        "Categoría": "categoria"
     })
 
     expected_columns = [
@@ -518,7 +639,8 @@ def prepare_dataframe_for_supabase(df):
         "funciones",
         "competencias",
         "requisitos",
-        "etapas_seleccion"
+        "etapas_seleccion",
+        "categoria"
     ]
 
     for col in expected_columns:
@@ -527,7 +649,6 @@ def prepare_dataframe_for_supabase(df):
 
     df_supabase = df_supabase[expected_columns]
 
-    # Convertir NaN a None para JSON/Postgres
     df_supabase = df_supabase.astype(object).where(pd.notnull(df_supabase), None)
 
     return df_supabase
