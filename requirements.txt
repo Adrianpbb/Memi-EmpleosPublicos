@@ -1,4 +1,4 @@
-selenium
+requests
 pandas
 openpyxl
 supabase
