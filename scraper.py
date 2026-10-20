@@ -137,7 +137,8 @@ CARRERAS = [
     "enfermeria", "estadistica", "control de gestion", "ingenieria informatica", "ingenieria en computacion",
     "ciencia de datos", "geografia", "periodismo", "pedagogia", "educacion parvularia", "kinesiologia", "nutricion", "odontologia",
 ]
-DETALLE_COLS = ["formacion", "especializacion", "experiencia", "anios_exp_min", "anios_exp_max", "carreras"]
+DETALLE_COLS = ["formacion", "especializacion", "experiencia", "anios_exp_min", "anios_exp_max", "carreras",
+                "grado", "tipo_vacante_det", "postulantes"]
 
 
 def _sin_tildes(s: str) -> str:
@@ -168,6 +169,34 @@ def anios_experiencia(texto: str):
     return (min(vals), max(vals)) if vals else (None, None)
 
 
+def normalizar_estamento(tipo: str):
+    """'Ingreso a Planta' -> Planta, 'Contrata Ley 19.664' -> Contrata, etc. None si viene vacío."""
+    t = _sin_tildes(tipo if isinstance(tipo, str) else "")
+    if not t.strip():
+        return None
+    if "planta" in t:
+        return "Planta"
+    if "contrata" in t:
+        return "Contrata"
+    if "honorario" in t:
+        return "Honorarios"
+    if "codigo del trabajo" in t:
+        return "Código del Trabajo"
+    if "suplencia" in t or "reemplazo" in t:
+        return "Suplencia/Reemplazo"
+    return "Otro"
+
+
+def extraer_grado(texto: str):
+    """Grado de la escala (EUS) mencionado en el texto de la oferta, como entero 1..31; None si no hay."""
+    t = _sin_tildes(texto)
+    for m in re.finditer(r"(?<![a-z])grado\s*(?:n[o°º]?\.?\s*)?(\d{1,2})", t):
+        g = int(m.group(1))
+        if 1 <= g <= 31:
+            return g
+    return None
+
+
 def fetch_detalle(url: str) -> dict:
     vacio = {c: None for c in DETALLE_COLS}
     if "convpostularavisoTrabajo" not in url and "convFicha" not in url:
@@ -183,16 +212,20 @@ def fetch_detalle(url: str) -> dict:
                     raise
                 time.sleep(1.5)
         h = r.text
+        grado = extraer_grado(_texto_html(h))
+        mt = re.search(r"<dt>Tipo de Vacante</dt><dd>(.*?)</dd>", h, re.S)
+        tipo_det = _texto_html(mt.group(1)) if mt else None
         formacion = _bloque(h, "articleFormacion")
         espec = _bloque(h, "articleEspecializaciones")
         exp = _bloque(h, "articleExperiencias")
+        base = {"grado": grado, "tipo_vacante_det": tipo_det, "postulantes": None}
         if not (formacion or espec or exp):
-            return vacio  # ficha externa (PDF / iframe): sin bloques
+            return {**vacio, **base}  # ficha externa (PDF / iframe): sin bloques
         mn, mx = anios_experiencia(exp)
         nf = _sin_tildes(formacion)
         carreras = ", ".join(c for c in CARRERAS if c in nf) or None
         return {"formacion": formacion or None, "especializacion": espec or None,
-                "experiencia": exp or None, "anios_exp_min": mn, "anios_exp_max": mx, "carreras": carreras}
+                "experiencia": exp or None, "anios_exp_min": mn, "anios_exp_max": mx, "carreras": carreras, **base}
     except Exception as e:
         logging.warning("Detalle falló (%s): %s", url[-60:], e)
         return vacio
@@ -204,10 +237,17 @@ def agregar_detalle(df: pd.DataFrame) -> pd.DataFrame:
     with ThreadPoolExecutor(max_workers=8) as ex:
         detalles = list(ex.map(fetch_detalle, urls))
     det = pd.DataFrame(detalles, columns=DETALLE_COLS, index=df.index)
-    for c in ("anios_exp_min", "anios_exp_max"):
+    for c in ("anios_exp_min", "anios_exp_max", "grado", "postulantes"):
         det[c] = pd.to_numeric(det[c]).astype("Int64")  # enteros (no 5.0) para la columna int de Postgres
+    # postulantes: el portal no publica la cantidad (verificado en API y en las bases) -> siempre null
+    df = df.copy()
+    df["estamento"] = [normalizar_estamento(a) or normalizar_estamento(b)
+                       for a, b in zip(df["tipo_vacante"], det.pop("tipo_vacante_det"))]
+    for c in ("grado",):  # respaldo: grado mencionado en el cargo
+        det[c] = det[c].fillna(pd.Series([extraer_grado(x) for x in df["cargo"]], index=df.index, dtype="Int64"))
     con = det["formacion"].notna().sum()
-    logging.info("Detalle rescatado en %s de %s ofertas", con, len(df))
+    logging.info("Detalle rescatado en %s de %s ofertas (grado %s, estamento %s)", con, len(df),
+                 det["grado"].notna().sum(), df["estamento"].notna().sum())
     return pd.concat([df, det], axis=1)
 
 

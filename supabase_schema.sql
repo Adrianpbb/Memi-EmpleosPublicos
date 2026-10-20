@@ -28,6 +28,9 @@ create table public.empleos_publicos (
   anios_exp_min     int,    -- menor nº de años mencionado en experiencia
   anios_exp_max     int,    -- mayor nº de años mencionado en experiencia
   carreras          text,   -- carreras detectadas en formación (coma)
+  grado             int,    -- grado EUS mencionado en la oferta (null si no aparece)
+  estamento         text,   -- Planta / Contrata / Honorarios / Código del Trabajo / Suplencia/Reemplazo / Otro
+  postulantes       int,    -- el portal no publica la cantidad: siempre null
   extraido_en       timestamptz not null
 );
 create index on public.empleos_publicos (fecha_cierre);
