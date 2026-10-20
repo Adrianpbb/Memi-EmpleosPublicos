@@ -218,7 +218,8 @@ def fetch_detalle(url: str) -> dict:
         formacion = _bloque(h, "articleFormacion")
         espec = _bloque(h, "articleEspecializaciones")
         exp = _bloque(h, "articleExperiencias")
-        base = {"grado": grado, "tipo_vacante_det": tipo_det, "postulantes": None}
+        mp = re.search(r'detail-template__metric-row.*?<strong>\s*(\d+)\s*</strong>', h, re.S)
+        base = {"grado": grado, "tipo_vacante_det": tipo_det, "postulantes": int(mp.group(1)) if mp else None}
         if not (formacion or espec or exp):
             return {**vacio, **base}  # ficha externa (PDF / iframe): sin bloques
         mn, mx = anios_experiencia(exp)
@@ -239,7 +240,6 @@ def agregar_detalle(df: pd.DataFrame) -> pd.DataFrame:
     det = pd.DataFrame(detalles, columns=DETALLE_COLS, index=df.index)
     for c in ("anios_exp_min", "anios_exp_max", "grado", "postulantes"):
         det[c] = pd.to_numeric(det[c]).astype("Int64")  # enteros (no 5.0) para la columna int de Postgres
-    # postulantes: el portal no publica la cantidad (verificado en API y en las bases) -> siempre null
     df = df.copy()
     df["estamento"] = [normalizar_estamento(a) or normalizar_estamento(b)
                        for a, b in zip(df["tipo_vacante"], det.pop("tipo_vacante_det"))]
