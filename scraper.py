@@ -8,6 +8,9 @@ import logging
 import os
 import re
 import sys
+import time
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from html import unescape
 from urllib.parse import parse_qs, urlparse
@@ -124,6 +127,90 @@ def transformar(items: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(list(rows.values()))
 
 
+NUMEROS = {"un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6,
+           "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "doce": 12, "quince": 15}
+CARRERAS = [
+    "administracion publica", "administrador publico", "ingenieria comercial", "ingenieria civil industrial",
+    "ingenieria industrial", "contador auditor", "contador", "auditor", "ingenieria en administracion",
+    "administracion de empresas", "economia", "ingenieria civil", "ciencia politica", "ciencias politicas",
+    "sociologia", "trabajo social", "psicologia", "derecho", "abogado", "arquitectura", "medicina",
+    "enfermeria", "estadistica", "control de gestion", "ingenieria informatica", "ingenieria en computacion",
+    "ciencia de datos", "geografia", "periodismo", "pedagogia", "educacion parvularia", "kinesiologia", "nutricion", "odontologia",
+]
+DETALLE_COLS = ["formacion", "especializacion", "experiencia", "anios_exp_min", "anios_exp_max", "carreras"]
+
+
+def _sin_tildes(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s.lower()) if unicodedata.category(c) != "Mn")
+
+
+def _texto_html(fragmento: str) -> str:
+    t = re.sub(r"<[^>]+>", " ", fragmento)
+    return re.sub(r"\s+", " ", unescape(t)).strip()
+
+
+def _bloque(html_txt: str, art_id: str) -> str:
+    m = re.search(r'id="%s"[^>]*>(.*?)</div>' % art_id, html_txt, re.S)
+    if not m:
+        return ""
+    t = _texto_html(m.group(1))
+    return re.sub(r"^(Formaci.n Educacional|Especializaci.n y/o Capacitaci.n|Experiencia sector p.blico / sector privado)\s*", "", t)
+
+
+def anios_experiencia(texto: str):
+    """(min, max) de años mencionados en el bloque de experiencia; (None, None) si no hay."""
+    vals = []
+    t = _sin_tildes(texto)
+    for m in re.finditer(r"(\d{1,2}|" + "|".join(NUMEROS) + r")\s*(?:\(\d+\)\s*)?anos?\b", t):
+        g = m.group(1)
+        vals.append(int(g) if g.isdigit() else NUMEROS[g])
+    vals = [v for v in vals if 0 < v <= 40]
+    return (min(vals), max(vals)) if vals else (None, None)
+
+
+def fetch_detalle(url: str) -> dict:
+    vacio = {c: None for c in DETALLE_COLS}
+    if "convpostularavisoTrabajo" not in url and "convFicha" not in url:
+        return vacio
+    try:
+        for intento in range(3):
+            try:
+                r = requests.get(url, headers={"User-Agent": HEADERS["User-Agent"]}, timeout=30)
+                r.raise_for_status()
+                break
+            except requests.RequestException:
+                if intento == 2:
+                    raise
+                time.sleep(1.5)
+        h = r.text
+        formacion = _bloque(h, "articleFormacion")
+        espec = _bloque(h, "articleEspecializaciones")
+        exp = _bloque(h, "articleExperiencias")
+        if not (formacion or espec or exp):
+            return vacio  # ficha externa (PDF / iframe): sin bloques
+        mn, mx = anios_experiencia(exp)
+        nf = _sin_tildes(formacion)
+        carreras = ", ".join(c for c in CARRERAS if c in nf) or None
+        return {"formacion": formacion or None, "especializacion": espec or None,
+                "experiencia": exp or None, "anios_exp_min": mn, "anios_exp_max": mx, "carreras": carreras}
+    except Exception as e:
+        logging.warning("Detalle falló (%s): %s", url[-60:], e)
+        return vacio
+
+
+def agregar_detalle(df: pd.DataFrame) -> pd.DataFrame:
+    """Entra a cada oferta (en paralelo, sin Selenium) y rescata requisitos académicos y laborales."""
+    urls = df["url_oferta"].fillna("").tolist()
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        detalles = list(ex.map(fetch_detalle, urls))
+    det = pd.DataFrame(detalles, columns=DETALLE_COLS, index=df.index)
+    for c in ("anios_exp_min", "anios_exp_max"):
+        det[c] = pd.to_numeric(det[c]).astype("Int64")  # enteros (no 5.0) para la columna int de Postgres
+    con = det["formacion"].notna().sum()
+    logging.info("Detalle rescatado en %s de %s ofertas", con, len(df))
+    return pd.concat([df, det], axis=1)
+
+
 def exportar(df: pd.DataFrame):
     df.to_excel("empleos_publicos.xlsx", index=False)
     df.to_csv("empleos_publicos.csv", index=False, encoding="utf-8-sig", sep=";", quoting=csv.QUOTE_ALL)
@@ -155,6 +242,7 @@ def main():
             sys.exit(1)
         df = transformar(items)
         logging.info("Procesadas %s ofertas", len(df))
+        df = agregar_detalle(df)
         exportar(df)
         subir_supabase(df)
     except Exception:
