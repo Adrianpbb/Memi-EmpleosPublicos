@@ -138,7 +138,7 @@ CARRERAS = [
     "ciencia de datos", "geografia", "periodismo", "pedagogia", "educacion parvularia", "kinesiologia", "nutricion", "odontologia",
 ]
 DETALLE_COLS = ["formacion", "especializacion", "experiencia", "anios_exp_min", "anios_exp_max", "carreras",
-                "grado", "tipo_vacante_det", "postulantes"]
+                "grado", "tipo_vacante_det", "postulantes", "ultima_postulacion"]
 
 
 def _sin_tildes(s: str) -> str:
@@ -219,7 +219,9 @@ def fetch_detalle(url: str) -> dict:
         espec = _bloque(h, "articleEspecializaciones")
         exp = _bloque(h, "articleExperiencias")
         mp = re.search(r'detail-template__metric-row.*?<strong>\s*(\d+)\s*</strong>', h, re.S)
-        base = {"grado": grado, "tipo_vacante_det": tipo_det, "postulantes": int(mp.group(1)) if mp else None}
+        mf = re.search(r'id=['"]lblFechaPost['"][^>]*>.*?(\d{1,2}:\d{2}:\d{2}).*?(\d{2}-\d{2}-\d{4})', h, re.S)
+        ultima_post = f"{mf.group(2).split('-')[2]}-{mf.group(2).split('-')[1]}-{mf.group(2).split('-')[0]} {mf.group(1)}" if mf else None
+        base = {"grado": grado, "tipo_vacante_det": tipo_det, "postulantes": int(mp.group(1)) if mp else None, "ultima_postulacion": ultima_post}
         if not (formacion or espec or exp):
             return {**vacio, **base}  # ficha externa (PDF / iframe): sin bloques
         mn, mx = anios_experiencia(exp)
@@ -267,7 +269,17 @@ def subir_supabase(df: pd.DataFrame):
     records = df.astype(object).where(pd.notnull(df), None).to_dict(orient="records")
     run_ts = records[0]["extraido_en"]
     for i in range(0, len(records), BATCH_SIZE):
-        sb.table(TABLE).upsert(records[i:i + BATCH_SIZE], on_conflict="id_convocatoria").execute()
+        batch = records[i:i + BATCH_SIZE]
+        try:
+            sb.table(TABLE).upsert(batch, on_conflict="id_convocatoria").execute()
+        except Exception as e:
+            if "ultima_postulacion" in str(e).lower():
+                logging.warning("Columna 'ultima_postulacion' pendiente en Supabase. Insertando temporalmente sin ella...")
+                for r in batch:
+                    r.pop("ultima_postulacion", None)
+                sb.table(TABLE).upsert(batch, on_conflict="id_convocatoria").execute()
+            else:
+                raise
         logging.info("Upsert %s-%s", i + 1, min(i + BATCH_SIZE, len(records)))
     # Borra solo lo que ya no está en la lista (sólo si la carga completa fue exitosa)
     sb.table(TABLE).delete().lt("extraido_en", run_ts).execute()

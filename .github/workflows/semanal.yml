@@ -3,8 +3,7 @@ name: Scraper Empleos Públicos
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 11 * * 1"  # lunes
-    - cron: "0 11 * * 5"  # viernes
+    - cron: "0 11 * * *"  # Todos los dias a las 08:00 AM hora Chile (11:00 UTC)
 
 jobs:
   scrape:
