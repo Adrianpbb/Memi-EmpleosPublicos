@@ -219,7 +219,7 @@ def fetch_detalle(url: str) -> dict:
         espec = _bloque(h, "articleEspecializaciones")
         exp = _bloque(h, "articleExperiencias")
         mp = re.search(r'detail-template__metric-row.*?<strong>\s*(\d+)\s*</strong>', h, re.S)
-        mf = re.search(r'id=['"]lblFechaPost['"][^>]*>.*?(\d{1,2}:\d{2}:\d{2}).*?(\d{2}-\d{2}-\d{4})', h, re.S)
+        mf = re.search(r"lblFechaPost.*?(\d{1,2}:\d{2}:\d{2}).*?(\d{2}-\d{2}-\d{4})", h, re.S)
         ultima_post = f"{mf.group(2).split('-')[2]}-{mf.group(2).split('-')[1]}-{mf.group(2).split('-')[0]} {mf.group(1)}" if mf else None
         base = {"grado": grado, "tipo_vacante_det": tipo_det, "postulantes": int(mp.group(1)) if mp else None, "ultima_postulacion": ultima_post}
         if not (formacion or espec or exp):
