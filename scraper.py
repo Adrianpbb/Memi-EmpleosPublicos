@@ -133,10 +133,26 @@ CARRERAS = [
     "administracion publica", "administrador publico", "ingenieria comercial", "ingenieria civil industrial",
     "ingenieria industrial", "contador auditor", "contador", "auditor", "ingenieria en administracion",
     "administracion de empresas", "economia", "ingenieria civil", "ciencia politica", "ciencias politicas",
-    "sociologia", "trabajo social", "psicologia", "derecho", "abogado", "arquitectura", "medicina",
+    "sociologia", "trabajo social", "psicologia", "abogado", "arquitectura", "medicina",
     "enfermeria", "estadistica", "control de gestion", "ingenieria informatica", "ingenieria en computacion",
     "ciencia de datos", "geografia", "periodismo", "pedagogia", "educacion parvularia", "kinesiologia", "nutricion", "odontologia",
 ]
+# Profesiones detectadas por raíz (cubre enfermero/a, enfermería, matrón/a, kinesiólogo/a...). Se aplica sobre texto sin tildes.
+CARRERAS_RE = {
+    "enfermeria": r"enfermer",
+    "matroneria": r"matron",
+    "kinesiologia": r"kinesi",
+    "nutricion": r"nutricion",
+    "odontologia": r"odontolog",
+    "psicologia": r"psicolog",
+    "abogado": r"abogad",
+    "derecho": r"(titulo|licenciad\w*|egresad\w*)[^.]{0,80}derecho|ciencias juridicas",
+    "medicina": r"medico cirujano|medicina|medic[oa]s?",
+    "tecnologia medica": r"tecnolog\w* medic",
+    "quimico farmaceutico": r"quimic\w* farmaceutic",
+    "terapia ocupacional": r"terapeuta ocupacional|terapia ocupacional",
+    "fonoaudiologia": r"fonoaudiolog",
+}
 DETALLE_COLS = ["formacion", "especializacion", "experiencia", "anios_exp_min", "anios_exp_max", "carreras",
                 "grado", "tipo_vacante_det", "postulantes", "ultima_postulacion"]
 
@@ -226,7 +242,12 @@ def fetch_detalle(url: str) -> dict:
             return {**vacio, **base}  # ficha externa (PDF / iframe): sin bloques
         mn, mx = anios_experiencia(exp)
         nf = _sin_tildes(formacion)
-        carreras = ", ".join(c for c in CARRERAS if c in nf) or None
+        nf_med = re.sub(r"tecnolog\w* medic\w*", " ", nf)  # "tecnólogo médico" no es medicina
+        halladas = [c for c in CARRERAS if c in nf]
+        for nombre, rx in CARRERAS_RE.items():
+            if nombre not in halladas and re.search(rx, nf_med if nombre == "medicina" else nf):
+                halladas.append(nombre)
+        carreras = ", ".join(halladas) or None
         return {"formacion": formacion or None, "especializacion": espec or None,
                 "experiencia": exp or None, "anios_exp_min": mn, "anios_exp_max": mx, "carreras": carreras, **base}
     except Exception as e:
